@@ -1,0 +1,78 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# تحديث files.json تلقائياً عند كل رفع صور جديدة
+# ───────────────────────────────────────────────────────────────────────────
+# مكان الملف داخل كل مستودع صور:
+#     .github/workflows/update-files.yml
+#
+# ما يفعله: عند أي رفع (push) للفرع main يمسح المستودع، يجمع أسماء كل ملفات
+# الصور، ويكتبها في files.json — ثم يرفع التغيير فقط إذا اختلفت القائمة.
+#
+# ⚠️ تفعيل صلاحية الكتابة (مرة واحدة لكل مستودع):
+#     Settings ← Actions ← General ← Workflow permissions
+#     اختر "Read and write permissions" ثم Save
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Update files.json
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'files.json'          # يمنع تشغيل الحلقة على نفسه
+      - '.github/**'
+  workflow_dispatch:           # زر تشغيل يدوي من تبويب Actions
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-files-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build files.json
+        run: |
+          python3 - << 'EOF'
+          import json, os
+
+          EXTS = ('.jpg', '.jpeg', '.png', '.webp')
+          files = []
+
+          for root, dirs, names in os.walk('.'):
+              # تجاهل مجلدات الخدمة
+              dirs[:] = [d for d in dirs if d not in ('.git', '.github')]
+              for name in names:
+                  if name.lower().endswith(EXTS):
+                      path = os.path.relpath(os.path.join(root, name), '.')
+                      files.append(path.replace(os.sep, '/'))
+
+          # ترتيب رقمي ذكي: 2.jpg قبل 10.jpg
+          def key(p):
+              stem = os.path.splitext(os.path.basename(p))[0]
+              return (0, int(stem)) if stem.isdigit() else (1, stem.lower())
+
+          files.sort(key=key)
+
+          with open('files.json', 'w', encoding='utf-8') as f:
+              json.dump(files, f, ensure_ascii=False, indent=0)
+
+          print(f'✅ {len(files)} صورة')
+          EOF
+
+      - name: Commit if changed
+        run: |
+          if git diff --quiet -- files.json; then
+            echo "لا تغيير في القائمة — لا حاجة لأي رفع"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add files.json
+          git commit -m "chore: update files.json [skip ci]"
+          git push
